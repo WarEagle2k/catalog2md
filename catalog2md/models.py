@@ -45,10 +45,8 @@ class TableData:
             return False, "No table rows found"
         counts = []
         for line in lines:
-            # Count pipe-separated cells (ignoring separator rows like |---|---|)
             cells = [c for c in line.split("|") if c.strip() and not re.match(r'^[\s\-:]+$', c)]
             counts.append(len(cells))
-        # Separator rows may have different counts; compare only data rows
         data_counts = [c for c in counts if c > 0]
         if not data_counts:
             return False, "No data cells found"
