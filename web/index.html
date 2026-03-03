@@ -10,7 +10,6 @@
     <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-    <!-- HEADER -->
     <header class="header">
         <div class="header-inner">
             <div class="logo-group">
@@ -30,9 +29,7 @@
         </div>
     </header>
 
-    <!-- MAIN CONTENT -->
     <main class="main">
-        <!-- UPLOAD SECTION -->
         <section id="upload-section" class="section upload-section">
             <div class="section-header">
                 <span class="section-label">01</span>
@@ -50,7 +47,6 @@
                 <input type="file" id="file-input" accept=".pdf" hidden>
             </div>
 
-            <!-- File selected state -->
             <div class="file-info" id="file-info" hidden>
                 <div class="file-details">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -69,20 +65,14 @@
                 </button>
             </div>
 
-            <!-- Processing state -->
             <div class="processing" id="processing" hidden>
-                <div class="processing-spinner">
-                    <div class="spinner-ring"></div>
-                </div>
+                <div class="processing-spinner"><div class="spinner-ring"></div></div>
                 <div class="processing-info">
                     <span class="processing-status" id="processing-status">Initializing extraction pipeline...</span>
-                    <div class="processing-bar">
-                        <div class="processing-bar-fill" id="processing-bar-fill"></div>
-                    </div>
+                    <div class="processing-bar"><div class="processing-bar-fill" id="processing-bar-fill"></div></div>
                 </div>
             </div>
 
-            <!-- Error state -->
             <div class="error-banner" id="error-banner" hidden>
                 <div class="error-icon">!</div>
                 <div class="error-content">
@@ -93,7 +83,6 @@
             </div>
         </section>
 
-        <!-- RESULTS SECTION -->
         <section id="results-section" class="section results-section" hidden>
             <div class="section-header">
                 <span class="section-label">02</span>
@@ -101,36 +90,20 @@
                 <span class="results-filename" id="results-filename"></span>
             </div>
 
-            <!-- Tab bar -->
             <div class="tabs">
-                <button class="tab active" data-tab="overview">
-                    <span class="tab-indicator"></span>
-                    Overview
-                </button>
-                <button class="tab" data-tab="markdown">
-                    <span class="tab-indicator"></span>
-                    Consolidated Markdown
-                </button>
-                <button class="tab" data-tab="chunks">
-                    <span class="tab-indicator"></span>
-                    Chunks
-                </button>
+                <button class="tab active" data-tab="overview"><span class="tab-indicator"></span>Overview</button>
+                <button class="tab" data-tab="markdown"><span class="tab-indicator"></span>Consolidated Markdown</button>
+                <button class="tab" data-tab="chunks"><span class="tab-indicator"></span>Chunks</button>
             </div>
 
-            <!-- TAB: Overview -->
             <div class="tab-panel active" id="panel-overview">
                 <div class="overview-grid">
-                    <!-- Validation status -->
                     <div class="overview-card card-validation" id="card-validation">
-                        <div class="card-header">
-                            <span class="card-label">Validation</span>
-                        </div>
+                        <div class="card-header"><span class="card-label">Validation</span></div>
                         <div class="validation-status" id="validation-status">
                             <span class="validation-badge" id="validation-badge"></span>
                         </div>
                     </div>
-
-                    <!-- Stats cards -->
                     <div class="overview-card">
                         <div class="card-header"><span class="card-label">Pages</span></div>
                         <div class="stat-value" id="stat-pages">—</div>
@@ -150,14 +123,10 @@
                         <div class="stat-value" id="stat-parts">—</div>
                     </div>
                 </div>
-
-                <!-- Extraction breakdown -->
                 <div class="breakdown-section">
                     <h3 class="subsection-title">Extraction Method Breakdown</h3>
                     <div class="breakdown-bars" id="breakdown-bars"></div>
                 </div>
-
-                <!-- Flagged issues -->
                 <div class="issues-section" id="issues-section" hidden>
                     <h3 class="subsection-title">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -170,7 +139,6 @@
                 </div>
             </div>
 
-            <!-- TAB: Consolidated Markdown -->
             <div class="tab-panel" id="panel-markdown">
                 <div class="md-toolbar">
                     <button class="btn-secondary" id="btn-copy-md">
@@ -193,7 +161,6 @@
                 </div>
             </div>
 
-            <!-- TAB: Chunks -->
             <div class="tab-panel" id="panel-chunks">
                 <div class="chunks-toolbar">
                     <span class="chunks-count" id="chunks-count"></span>
@@ -208,7 +175,6 @@
         </section>
     </main>
 
-    <!-- FOOTER -->
     <footer class="footer">
         <div class="footer-inner">
             <span class="footer-text">catalog2md v1.0.0 — Extraction engines: Docling · pdfplumber · Claude Vision</span>
