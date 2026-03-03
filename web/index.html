@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>catalog2md — PDF to RAG-Optimized Markdown</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <!-- HEADER -->
+    <header class="header">
+        <div class="header-inner">
+            <div class="logo-group">
+                <div class="logo-mark">
+                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="1" y="1" width="26" height="26" rx="2" stroke="#38bdf8" stroke-width="1.5"/>
+                        <path d="M7 8h14M7 12h10M7 16h14M7 20h8" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="square"/>
+                        <rect x="19" y="15" width="5" height="7" rx="1" fill="#38bdf8" opacity="0.3" stroke="#38bdf8" stroke-width="1"/>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <span class="logo-name">catalog2md</span>
+                    <span class="logo-version">v1.0.0</span>
+                </div>
+            </div>
+            <div class="header-tagline">PDF Catalog → RAG-Optimized Markdown</div>
+        </div>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main class="main">
+        <!-- UPLOAD SECTION -->
+        <section id="upload-section" class="section upload-section">
+            <div class="section-header">
+                <span class="section-label">01</span>
+                <h2 class="section-title">Upload Catalog</h2>
+            </div>
+            <div class="upload-area" id="drop-zone">
+                <div class="upload-icon">
+                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="8" y="6" width="32" height="40" rx="2" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="4 3"/>
+                        <path d="M24 18v12M18 24l6-6 6 6" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="square"/>
+                    </svg>
+                </div>
+                <p class="upload-text">Drop PDF catalog here or <label for="file-input" class="upload-link">browse files</label></p>
+                <p class="upload-hint">Accepts .pdf files up to 50MB</p>
+                <input type="file" id="file-input" accept=".pdf" hidden>
+            </div>
+
+            <!-- File selected state -->
+            <div class="file-info" id="file-info" hidden>
+                <div class="file-details">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="3" y="1" width="14" height="18" rx="2" stroke="#38bdf8" stroke-width="1.2"/>
+                        <path d="M7 6h6M7 9h6M7 12h4" stroke="#38bdf8" stroke-width="1" stroke-linecap="square"/>
+                    </svg>
+                    <span class="file-name" id="file-name"></span>
+                    <span class="file-size" id="file-size"></span>
+                    <button class="file-remove" id="file-remove" title="Remove file">×</button>
+                </div>
+                <button class="btn-convert" id="btn-convert">
+                    <span class="btn-text">Convert to Markdown</span>
+                    <svg class="btn-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Processing state -->
+            <div class="processing" id="processing" hidden>
+                <div class="processing-spinner">
+                    <div class="spinner-ring"></div>
+                </div>
+                <div class="processing-info">
+                    <span class="processing-status" id="processing-status">Initializing extraction pipeline...</span>
+                    <div class="processing-bar">
+                        <div class="processing-bar-fill" id="processing-bar-fill"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error state -->
+            <div class="error-banner" id="error-banner" hidden>
+                <div class="error-icon">!</div>
+                <div class="error-content">
+                    <span class="error-title">Conversion Failed</span>
+                    <span class="error-message" id="error-message"></span>
+                </div>
+                <button class="error-dismiss" id="error-dismiss">×</button>
+            </div>
+        </section>
+
+        <!-- RESULTS SECTION -->
+        <section id="results-section" class="section results-section" hidden>
+            <div class="section-header">
+                <span class="section-label">02</span>
+                <h2 class="section-title">Results</h2>
+                <span class="results-filename" id="results-filename"></span>
+            </div>
+
+            <!-- Tab bar -->
+            <div class="tabs">
+                <button class="tab active" data-tab="overview">
+                    <span class="tab-indicator"></span>
+                    Overview
+                </button>
+                <button class="tab" data-tab="markdown">
+                    <span class="tab-indicator"></span>
+                    Consolidated Markdown
+                </button>
+                <button class="tab" data-tab="chunks">
+                    <span class="tab-indicator"></span>
+                    Chunks
+                </button>
+            </div>
+
+            <!-- TAB: Overview -->
+            <div class="tab-panel active" id="panel-overview">
+                <div class="overview-grid">
+                    <!-- Validation status -->
+                    <div class="overview-card card-validation" id="card-validation">
+                        <div class="card-header">
+                            <span class="card-label">Validation</span>
+                        </div>
+                        <div class="validation-status" id="validation-status">
+                            <span class="validation-badge" id="validation-badge"></span>
+                        </div>
+                    </div>
+
+                    <!-- Stats cards -->
+                    <div class="overview-card">
+                        <div class="card-header"><span class="card-label">Pages</span></div>
+                        <div class="stat-value" id="stat-pages">—</div>
+                        <div class="stat-sub" id="stat-pages-sub"></div>
+                    </div>
+                    <div class="overview-card">
+                        <div class="card-header"><span class="card-label">Chunks</span></div>
+                        <div class="stat-value" id="stat-chunks">—</div>
+                        <div class="stat-sub" id="stat-chunks-sub"></div>
+                    </div>
+                    <div class="overview-card">
+                        <div class="card-header"><span class="card-label">Tables</span></div>
+                        <div class="stat-value" id="stat-tables">—</div>
+                    </div>
+                    <div class="overview-card">
+                        <div class="card-header"><span class="card-label">Part Numbers</span></div>
+                        <div class="stat-value" id="stat-parts">—</div>
+                    </div>
+                </div>
+
+                <!-- Extraction breakdown -->
+                <div class="breakdown-section">
+                    <h3 class="subsection-title">Extraction Method Breakdown</h3>
+                    <div class="breakdown-bars" id="breakdown-bars"></div>
+                </div>
+
+                <!-- Flagged issues -->
+                <div class="issues-section" id="issues-section" hidden>
+                    <h3 class="subsection-title">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <path d="M8 1l7 13H1L8 1z" stroke="#f59e0b" stroke-width="1.2" fill="none"/>
+                            <path d="M8 6v4M8 11.5v.5" stroke="#f59e0b" stroke-width="1.2" stroke-linecap="square"/>
+                        </svg>
+                        Flagged Issues
+                    </h3>
+                    <ul class="issues-list" id="issues-list"></ul>
+                </div>
+            </div>
+
+            <!-- TAB: Consolidated Markdown -->
+            <div class="tab-panel" id="panel-markdown">
+                <div class="md-toolbar">
+                    <button class="btn-secondary" id="btn-copy-md">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <rect x="4" y="4" width="9" height="9" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                            <path d="M10 4V2a1 1 0 00-1-1H2a1 1 0 00-1 1v7a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/>
+                        </svg>
+                        Copy Raw Markdown
+                    </button>
+                    <button class="btn-secondary" id="btn-download-md">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M7 1v9M3 7l4 4 4-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"/>
+                            <path d="M1 12h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"/>
+                        </svg>
+                        Download .md
+                    </button>
+                </div>
+                <div class="md-display">
+                    <pre class="md-content"><code id="md-content"></code></pre>
+                </div>
+            </div>
+
+            <!-- TAB: Chunks -->
+            <div class="tab-panel" id="panel-chunks">
+                <div class="chunks-toolbar">
+                    <span class="chunks-count" id="chunks-count"></span>
+                    <div class="chunks-filter">
+                        <button class="filter-btn active" data-filter="all">All</button>
+                        <button class="filter-btn" data-filter="text">Text</button>
+                        <button class="filter-btn" data-filter="table">Table</button>
+                    </div>
+                </div>
+                <div class="chunks-list" id="chunks-list"></div>
+            </div>
+        </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <div class="footer-inner">
+            <span class="footer-text">catalog2md v1.0.0 — Extraction engines: Docling · pdfplumber · Claude Vision</span>
+            <div class="footer-grid-lines">
+                <span></span><span></span><span></span><span></span>
+            </div>
+        </div>
+    </footer>
+
+    <script src="./app.js"></script>
+</body>
+</html>
