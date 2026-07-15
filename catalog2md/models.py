@@ -40,18 +40,22 @@ class TableData:
 
     def validate_column_consistency(self) -> tuple[bool, str]:
         """Check that every row in the Markdown table has the same column count."""
-        lines = [l for l in self.markdown.strip().splitlines() if l.strip().startswith("|")]
+        lines = [l.strip() for l in self.markdown.strip().splitlines() if l.strip().startswith("|")]
         if not lines:
             return False, "No table rows found"
         counts = []
         for line in lines:
-            cells = [c for c in line.split("|") if c.strip() and not re.match(r'^[\s\-:]+$', c)]
-            counts.append(len(cells))
-        data_counts = [c for c in counts if c > 0]
-        if not data_counts:
+            # Skip separator rows like | --- | :---: |
+            if re.match(r'^[|\s\-:]+$', line):
+                continue
+            inner = line[1:] if line.startswith("|") else line
+            inner = inner[:-1] if inner.endswith("|") else inner
+            # Count all cells, including empty ones — blank cells are valid data
+            counts.append(len(inner.split("|")))
+        if not counts:
             return False, "No data cells found"
-        if len(set(data_counts)) > 1:
-            return False, f"Mismatched column counts: {data_counts}"
+        if len(set(counts)) > 1:
+            return False, f"Mismatched column counts: {counts}"
         return True, "OK"
 
 

@@ -32,6 +32,9 @@ python run_web.py
 
 Open **http://localhost:8080** in your browser. Upload a PDF, get results.
 
+The server binds to `127.0.0.1` by default. Options: `--port 9000` to change the port,
+`--host 0.0.0.0` to expose the interface on your LAN.
+
 ### 3. Command Line
 
 ```bash
@@ -45,11 +48,12 @@ python -m catalog2md ./pdf_folder/ --output ./output
 ## Web Interface
 
 The web interface provides:
-- Drag-and-drop PDF upload
-- Real-time progress indicator
+- Drag-and-drop PDF upload (large files are uploaded in chunks automatically)
+- Real-time progress indicator and conversion timing
 - Overview dashboard (pages, chunks, tables, part numbers, validation status)
 - Consolidated Markdown viewer with copy/download
-- Individual chunk browser with filtering and export
+- Chunk browser with full-text search, type filtering (text/table/mixed),
+  expand/collapse all, and per-chunk or bulk export
 
 Run locally with `python run_web.py` — no external services, no API keys, no timeouts.
 

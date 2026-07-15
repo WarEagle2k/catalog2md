@@ -45,7 +45,7 @@ def build_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     lines = []
     header_line = "| " + " | ".join(h.ljust(w) for h, w in zip(headers, widths)) + " |"
     lines.append(header_line)
-    sep_line = "| " + " | ".join("-" * w for w in widths) + " |"
+    sep_line = "| " + " | ".join("-" * max(w, 3) for w in widths) + " |"
     lines.append(sep_line)
     for row in normalized_rows:
         data_line = "| " + " | ".join(

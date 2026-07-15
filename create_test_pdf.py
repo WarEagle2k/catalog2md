@@ -1,4 +1,6 @@
 """Create a synthetic technical catalog PDF for testing catalog2md."""
+from pathlib import Path
+
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -9,7 +11,7 @@ from reportlab.platypus import (
 
 def create_test_catalog():
     doc = SimpleDocTemplate(
-        "/home/user/workspace/catalog2md/test_catalog.pdf",
+        str(Path(__file__).parent / "test_catalog.pdf"),
         pagesize=letter,
         title="AH-Series Air Handler Technical Catalog",
         author="Perplexity Computer",

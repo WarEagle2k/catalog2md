@@ -1,15 +1,17 @@
 /* ===== catalog2md — Frontend Logic ===== */
 
-const CGI_BIN = "/api";
+const API_BASE = "/api";
 
-// Upload config: CGI has 1MB body limit, base64 inflates by ~33%
-// So each chunk of original binary should be ~500KB to stay under 1MB after b64 + JSON overhead
+// Upload config: base64 inflates by ~33%, so each chunk of original binary is
+// kept small enough that the JSON body stays comfortably sized.
 const CHUNK_RAW_SIZE = 500 * 1024; // 500KB of raw PDF per chunk
 const SINGLE_UPLOAD_LIMIT = 600 * 1024; // PDFs under 600KB go single-shot
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 // State
 let currentData = null;
 let selectedFile = null;
+let conversionSeconds = null;
 
 // DOM refs
 const dropZone = document.getElementById("drop-zone");
@@ -26,6 +28,7 @@ const errorBanner = document.getElementById("error-banner");
 const errorMessage = document.getElementById("error-message");
 const errorDismiss = document.getElementById("error-dismiss");
 const resultsSection = document.getElementById("results-section");
+const chunkSearch = document.getElementById("chunk-search");
 
 // ===== FILE UPLOAD =====
 
@@ -40,7 +43,7 @@ function setFile(file) {
         showError("Please select a valid PDF file.");
         return;
     }
-    if (file.size > 50 * 1024 * 1024) {
+    if (file.size > MAX_FILE_SIZE) {
         showError("File exceeds 50MB limit.");
         return;
     }
@@ -78,6 +81,15 @@ dropZone.addEventListener("drop", (e) => {
     if (files.length > 0) setFile(files[0]);
 });
 
+// Allow dropping a PDF anywhere on the page while the drop zone is visible
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (!dropZone.hidden && e.dataTransfer.files.length > 0) {
+        setFile(e.dataTransfer.files[0]);
+    }
+});
+
 fileInput.addEventListener("change", () => {
     if (fileInput.files.length > 0) setFile(fileInput.files[0]);
 });
@@ -87,12 +99,14 @@ fileRemove.addEventListener("click", clearFile);
 // ===== HELPERS =====
 
 function arrayBufferToBase64(buffer) {
+    // Convert in slices — per-byte string concatenation is quadratic on big files
     const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
+    const parts = [];
+    const SLICE = 0x8000;
+    for (let i = 0; i < bytes.length; i += SLICE) {
+        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + SLICE)));
     }
-    return btoa(binary);
+    return btoa(parts.join(""));
 }
 
 async function postJSON(url, data) {
@@ -123,11 +137,52 @@ async function postJSON(url, data) {
     return result;
 }
 
+function downloadBlob(text, filename) {
+    const blob = new Blob([text], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+async function copyText(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+    }
+}
+
+const COPY_ICON = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4" y="4" width="9" height="9" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M10 4V2a1 1 0 00-1-1H2a1 1 0 00-1 1v7a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/></svg>`;
+const CHECK_ICON = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7l3 3 5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>`;
+
+function flashCopied(btn, restoreHtml) {
+    btn.classList.add("copied");
+    btn.innerHTML = CHECK_ICON + " Copied";
+    setTimeout(() => {
+        btn.classList.remove("copied");
+        btn.innerHTML = restoreHtml;
+    }, 2000);
+}
+
+function catalogBaseName() {
+    return currentData
+        ? currentData.filename.replace(/\.pdf$/i, "")
+        : "catalog";
+}
+
 // ===== PROCESSING =====
 
 const statusMessages = [
-    "Reading PDF file...",
-    "Uploading to server...",
     "Running extraction pipeline...",
     "Detecting tables and structured content...",
     "Extracting text and layout...",
@@ -138,16 +193,16 @@ const statusMessages = [
     "Finalizing...",
 ];
 
-function simulateProgress(abortSignal) {
+function simulateProgress(abortSignal, startPct = 0) {
     let step = 0;
-    let progress = 0;
+    let progress = startPct;
     const interval = setInterval(() => {
         if (abortSignal.aborted) {
             clearInterval(interval);
             return;
         }
-        step = Math.min(step + 1, statusMessages.length - 1);
         processingStatus.textContent = statusMessages[step];
+        step = Math.min(step + 1, statusMessages.length - 1);
 
         // Asymptotic progress — never reaches 100 until done
         progress = Math.min(progress + (100 - progress) * 0.08, 92);
@@ -165,21 +220,20 @@ function setProgress(message, pct) {
 async function uploadSingleShot(arrayBuffer, filename) {
     const b64 = arrayBufferToBase64(arrayBuffer);
     setProgress("Uploading PDF...", 10);
-    const result = await postJSON(`${CGI_BIN}/convert`, {
+    return postJSON(`${API_BASE}/convert`, {
         action: "convert",
         pdf_base64: b64,
         filename: filename,
     });
-    return result;
 }
 
-async function uploadChunked(arrayBuffer, filename) {
+async function uploadChunked(arrayBuffer, filename, onProcessingStart) {
     const totalSize = arrayBuffer.byteLength;
     const totalChunks = Math.ceil(totalSize / CHUNK_RAW_SIZE);
 
     // Step 1: Init upload session
     setProgress("Initializing upload...", 5);
-    const initResult = await postJSON(`${CGI_BIN}/convert`, {
+    const initResult = await postJSON(`${API_BASE}/convert`, {
         action: "init",
         filename: filename,
         total_chunks: totalChunks,
@@ -192,13 +246,12 @@ async function uploadChunked(arrayBuffer, filename) {
     for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_RAW_SIZE;
         const end = Math.min(start + CHUNK_RAW_SIZE, totalSize);
-        const chunkBuffer = arrayBuffer.slice(start, end);
-        const chunkB64 = arrayBufferToBase64(chunkBuffer);
+        const chunkB64 = arrayBufferToBase64(arrayBuffer.slice(start, end));
 
         const uploadPct = 5 + ((i + 1) / totalChunks) * 30; // 5-35% for upload phase
         setProgress(`Uploading chunk ${i + 1} of ${totalChunks}...`, uploadPct);
 
-        await postJSON(`${CGI_BIN}/convert`, {
+        await postJSON(`${API_BASE}/convert`, {
             action: "chunk",
             upload_id: uploadId,
             chunk_index: i,
@@ -206,14 +259,13 @@ async function uploadChunked(arrayBuffer, filename) {
         });
     }
 
-    // Step 3: Trigger processing
+    // Step 3: Trigger processing (this call blocks until conversion completes)
     setProgress("Processing PDF...", 40);
-    const result = await postJSON(`${CGI_BIN}/convert`, {
+    if (onProcessingStart) onProcessingStart();
+    return postJSON(`${API_BASE}/convert`, {
         action: "process",
         upload_id: uploadId,
     });
-
-    return result;
 }
 
 async function startConversion() {
@@ -230,29 +282,27 @@ async function startConversion() {
 
     const abortController = new AbortController();
     let stopProgress = null;
+    const startedAt = performance.now();
 
     try {
-        // Read file as ArrayBuffer
         const arrayBuffer = await selectedFile.arrayBuffer();
         const filename = selectedFile.name;
 
         let result;
         if (arrayBuffer.byteLength <= SINGLE_UPLOAD_LIMIT) {
-            // Small file: single-shot upload
-            stopProgress = simulateProgress(abortController.signal);
+            stopProgress = simulateProgress(abortController.signal, 10);
             result = await uploadSingleShot(arrayBuffer, filename);
         } else {
-            // Large file: chunked upload then process
-            result = await uploadChunked(arrayBuffer, filename);
-            // Start simulated progress for the processing phase
-            stopProgress = simulateProgress(abortController.signal);
-            // Actually, the result is already back at this point
+            // Large file: chunked upload, then simulated progress during processing
+            result = await uploadChunked(arrayBuffer, filename, () => {
+                stopProgress = simulateProgress(abortController.signal, 40);
+            });
         }
 
         abortController.abort();
         if (stopProgress) stopProgress();
 
-        // Success
+        conversionSeconds = (performance.now() - startedAt) / 1000;
         processingBarFill.style.width = "100%";
         processingStatus.textContent = "Conversion complete.";
 
@@ -288,6 +338,9 @@ function hideError() {
 }
 
 errorDismiss.addEventListener("click", hideError);
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !errorBanner.hidden) hideError();
+});
 
 // ===== TABS =====
 
@@ -310,9 +363,23 @@ function renderResults(data) {
     resultsSection.hidden = false;
     document.getElementById("results-filename").textContent = data.filename;
 
+    const elapsedEl = document.getElementById("results-elapsed");
+    if (conversionSeconds != null) {
+        elapsedEl.textContent = conversionSeconds.toFixed(1) + "s";
+        elapsedEl.hidden = false;
+    } else {
+        elapsedEl.hidden = true;
+    }
+
     renderOverview(data.report);
     renderMarkdown(data.consolidated_md);
     renderChunks(data.chunks);
+
+    // Reset chunk filters
+    chunkSearch.value = "";
+    document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelector('.filter-btn[data-filter="all"]').classList.add("active");
+    applyChunkFilters();
 
     // Switch to overview tab
     tabs.forEach((t) => t.classList.remove("active"));
@@ -364,7 +431,7 @@ function renderOverview(report) {
         docling: "method-docling",
         pdfplumber: "method-pdfplumber",
         claude_vision: "method-claude",
-        fallback: "method-fallback",
+        skipped: "method-fallback",
     };
 
     for (const [method, count] of Object.entries(breakdown)) {
@@ -372,7 +439,7 @@ function renderOverview(report) {
         const row = document.createElement("div");
         row.className = "breakdown-row";
         row.innerHTML = `
-            <span class="breakdown-label">${method}</span>
+            <span class="breakdown-label">${escapeHtml(method)}</span>
             <div class="breakdown-bar-track">
                 <div class="breakdown-bar-fill ${methodColors[method] || ""}" style="width: ${pct}%"></div>
             </div>
@@ -406,45 +473,22 @@ function renderMarkdown(md) {
 
 document.getElementById("btn-copy-md").addEventListener("click", async function () {
     if (!currentData) return;
-    try {
-        await navigator.clipboard.writeText(currentData.consolidated_md);
-        this.classList.add("copied");
-        const orig = this.innerHTML;
-        this.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7l3 3 5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg> Copied`;
-        setTimeout(() => {
-            this.classList.remove("copied");
-            this.innerHTML = orig;
-        }, 2000);
-    } catch (e) {
-        // Fallback
-        const textarea = document.createElement("textarea");
-        textarea.value = currentData.consolidated_md;
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
-    }
+    const orig = this.innerHTML;
+    await copyText(currentData.consolidated_md);
+    flashCopied(this, orig);
 });
 
 document.getElementById("btn-download-md").addEventListener("click", () => {
     if (!currentData) return;
-    const blob = new Blob([currentData.consolidated_md], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = currentData.filename.replace(/\.pdf$/i, "") + ".md";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(currentData.consolidated_md, catalogBaseName() + ".md");
 });
 
 // ===== CHUNKS =====
 
+const chunksList = document.getElementById("chunks-list");
+
 function renderChunks(chunks) {
-    const list = document.getElementById("chunks-list");
-    list.innerHTML = "";
-    document.getElementById("chunks-count").textContent = chunks.length + " chunks";
+    chunksList.innerHTML = "";
 
     chunks.forEach((chunk, idx) => {
         const card = document.createElement("div");
@@ -452,7 +496,10 @@ function renderChunks(chunks) {
         card.dataset.type = chunk.chunk_type;
         card.dataset.index = idx;
 
-        const typeBadgeClass = chunk.chunk_type === "table" ? "type-table" : "type-text";
+        const typeBadgeClass = {
+            table: "type-table",
+            mixed: "type-mixed",
+        }[chunk.chunk_type] || "type-text";
 
         const pageRange = chunk.page_range || "—";
         const tokens = chunk.token_count || 0;
@@ -460,10 +507,10 @@ function renderChunks(chunks) {
         card.innerHTML = `
             <div class="chunk-card-header">
                 <span class="chunk-num">#${chunk.chunk_num}</span>
-                <span class="chunk-type-badge ${typeBadgeClass}">${chunk.chunk_type}</span>
+                <span class="chunk-type-badge ${typeBadgeClass}">${escapeHtml(chunk.chunk_type)}</span>
                 <span class="chunk-heading">${escapeHtml(chunk.section_heading || "Untitled")}</span>
                 <div class="chunk-meta">
-                    <span class="chunk-meta-item">pp. <span>${pageRange}</span></span>
+                    <span class="chunk-meta-item">pp. <span>${escapeHtml(String(pageRange))}</span></span>
                     <span class="chunk-meta-item"><span>${tokens}</span> tok</span>
                 </div>
                 <span class="chunk-expand-icon">▶</span>
@@ -476,7 +523,7 @@ function renderChunks(chunks) {
                 <div class="chunk-body-content">${escapeHtml(chunk.content)}</div>
                 <div class="chunk-body-actions">
                     <button class="btn-secondary btn-copy-chunk" data-index="${idx}">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4" y="4" width="9" height="9" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M10 4V2a1 1 0 00-1-1H2a1 1 0 00-1 1v7a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/></svg>
+                        ${COPY_ICON}
                         Copy
                     </button>
                     <button class="btn-secondary btn-download-chunk" data-index="${idx}">
@@ -487,82 +534,97 @@ function renderChunks(chunks) {
             </div>
         `;
 
-        // Toggle expand
-        card.querySelector(".chunk-card-header").addEventListener("click", () => {
-            card.classList.toggle("expanded");
-        });
-
-        list.appendChild(card);
-    });
-
-    // Copy chunk buttons
-    list.addEventListener("click", async (e) => {
-        const copyBtn = e.target.closest(".btn-copy-chunk");
-        if (copyBtn) {
-            const idx = parseInt(copyBtn.dataset.index);
-            const chunk = currentData.chunks[idx];
-            const text = chunk.frontmatter || chunk.content;
-            try {
-                await navigator.clipboard.writeText(text);
-            } catch {
-                const ta = document.createElement("textarea");
-                ta.value = text;
-                ta.style.position = "fixed";
-                ta.style.opacity = "0";
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand("copy");
-                document.body.removeChild(ta);
-            }
-            copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7l3 3 5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg> Copied`;
-            setTimeout(() => {
-                copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4" y="4" width="9" height="9" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M10 4V2a1 1 0 00-1-1H2a1 1 0 00-1 1v7a1 1 0 001 1h2" stroke="currentColor" stroke-width="1.2"/></svg> Copy`;
-            }, 2000);
-        }
-
-        const dlBtn = e.target.closest(".btn-download-chunk");
-        if (dlBtn) {
-            const idx = parseInt(dlBtn.dataset.index);
-            const chunk = currentData.chunks[idx];
-            const text = chunk.frontmatter || chunk.content;
-            const blob = new Blob([text], { type: "text/markdown" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `chunk_${String(chunk.chunk_num).padStart(3, "0")}.md`;
-            a.click();
-            URL.revokeObjectURL(url);
-        }
+        chunksList.appendChild(card);
     });
 }
 
-// Chunk filter buttons
+// Delegated once — NOT inside renderChunks, so repeated conversions don't
+// stack duplicate listeners (which caused double downloads/copies before).
+chunksList.addEventListener("click", async (e) => {
+    const header = e.target.closest(".chunk-card-header");
+    if (header) {
+        header.parentElement.classList.toggle("expanded");
+        return;
+    }
+
+    const copyBtn = e.target.closest(".btn-copy-chunk");
+    if (copyBtn && currentData) {
+        const chunk = currentData.chunks[parseInt(copyBtn.dataset.index)];
+        await copyText(chunk.frontmatter || chunk.content);
+        flashCopied(copyBtn, COPY_ICON + " Copy");
+        return;
+    }
+
+    const dlBtn = e.target.closest(".btn-download-chunk");
+    if (dlBtn && currentData) {
+        const chunk = currentData.chunks[parseInt(dlBtn.dataset.index)];
+        const text = chunk.frontmatter || chunk.content;
+        const num = String(chunk.chunk_num).padStart(3, "0");
+        downloadBlob(text, `${catalogBaseName()}_chunk_${num}.md`);
+    }
+});
+
+// ===== CHUNK FILTERING & SEARCH =====
+
+function applyChunkFilters() {
+    if (!currentData) return;
+    const activeBtn = document.querySelector(".filter-btn.active");
+    const filter = activeBtn ? activeBtn.dataset.filter : "all";
+    const query = chunkSearch.value.trim().toLowerCase();
+
+    let visible = 0;
+    document.querySelectorAll(".chunk-card").forEach((card) => {
+        const chunk = currentData.chunks[parseInt(card.dataset.index)];
+        const typeMatch = filter === "all" || card.dataset.type === filter;
+        let searchMatch = true;
+        if (query) {
+            const haystack = (
+                (chunk.section_heading || "") + "\n" +
+                chunk.content + "\n" +
+                (chunk.part_numbers || []).join(" ")
+            ).toLowerCase();
+            searchMatch = haystack.includes(query);
+        }
+        const show = typeMatch && searchMatch;
+        card.dataset.hidden = show ? "false" : "true";
+        if (show) visible++;
+    });
+
+    const total = currentData.chunks.length;
+    const countEl = document.getElementById("chunks-count");
+    countEl.textContent = (visible === total)
+        ? total + " chunks"
+        : visible + " of " + total + " chunks";
+}
+
 document.querySelectorAll(".filter-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
         document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
-
-        const filter = btn.dataset.filter;
-        document.querySelectorAll(".chunk-card").forEach((card) => {
-            if (filter === "all" || card.dataset.type === filter) {
-                card.dataset.hidden = "false";
-                card.style.display = "";
-            } else {
-                card.dataset.hidden = "true";
-                card.style.display = "none";
-            }
-        });
-
-        // Update count
-        const visible = document.querySelectorAll('.chunk-card:not([data-hidden="true"])').length;
-        const total = currentData ? currentData.chunks.length : 0;
-        const countEl = document.getElementById("chunks-count");
-        if (filter === "all") {
-            countEl.textContent = total + " chunks";
-        } else {
-            countEl.textContent = visible + " of " + total + " chunks";
-        }
+        applyChunkFilters();
     });
+});
+
+chunkSearch.addEventListener("input", applyChunkFilters);
+
+// Expand / collapse all (only affects currently visible chunks)
+document.getElementById("btn-expand-all").addEventListener("click", () => {
+    document.querySelectorAll('.chunk-card:not([data-hidden="true"])')
+        .forEach((c) => c.classList.add("expanded"));
+});
+
+document.getElementById("btn-collapse-all").addEventListener("click", () => {
+    document.querySelectorAll(".chunk-card")
+        .forEach((c) => c.classList.remove("expanded"));
+});
+
+// Download all chunks as a single Markdown file (frontmatter included)
+document.getElementById("btn-download-chunks").addEventListener("click", () => {
+    if (!currentData) return;
+    const combined = currentData.chunks
+        .map((c) => c.frontmatter || c.content)
+        .join("\n\n");
+    downloadBlob(combined, catalogBaseName() + "_chunks.md");
 });
 
 // ===== UTILITIES =====

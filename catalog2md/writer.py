@@ -1,7 +1,6 @@
 """Output writer: produces consolidated .md, chunk files, and YAML front-matter."""
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -41,7 +40,7 @@ def write_consolidated_markdown(page_results, output_path, source_filename):
 
 def update_consolidated_chunk_count(output_path, chunk_count):
     content = output_path.read_text(encoding="utf-8")
-    content = content.replace("total_chunk_count: 0", f"total_chunk_count: {chunk_count}")
+    content = content.replace("total_chunk_count: 0", f"total_chunk_count: {chunk_count}", 1)
     output_path.write_text(content, encoding="utf-8")
 
 

@@ -5,8 +5,6 @@ import base64
 import io
 import os
 import re
-import sys
-import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -184,19 +182,8 @@ class PdfPlumberExtractor:
                         "horizontal_strategy": "text",
                     })
                 
-                table_bboxes = []
-                try:
-                    found_tables = page.find_tables()
-                    table_bboxes = [t.bbox for t in found_tables]
-                except Exception:
-                    pass
-                
-                if table_bboxes:
-                    text_parts = []
-                    text = page.extract_text() or ""
-                else:
-                    text = page.extract_text() or ""
-                
+                text = page.extract_text() or ""
+
                 tables: list[TableData] = []
                 md_parts = []
                 
@@ -229,24 +216,25 @@ class PdfPlumberExtractor:
                     if not raw_table or len(raw_table) < 2:
                         continue
                     
-                    flat_cells = [
-                        str(c).strip() for row in raw_table for c in row if c
+                    all_cells = [
+                        "" if c is None else str(c).strip()
+                        for row in raw_table for c in row
                     ]
-                    if flat_cells:
+                    non_empty = [c for c in all_cells if c]
+                    if non_empty:
                         fragment_count = sum(
-                            1 for c in flat_cells
+                            1 for c in non_empty
                             if len(c) > 10 and (
                                 c[-1].isalpha() and ' ' in c and
                                 not c.endswith(('in', 'mm', 'ft', 'lbs', 'kg', 'PSI', 'GPM', 'CFM'))
                             )
                         )
-                        fragment_ratio = fragment_count / len(flat_cells)
+                        fragment_ratio = fragment_count / len(non_empty)
                         if fragment_ratio > 0.3:
                             continue
-                        
-                        empty_ratio = sum(1 for c in flat_cells if not c) / len([str(c).strip() for row in raw_table for c in row])
-                        non_empty = [c for c in flat_cells if c]
-                        avg_cell_len = sum(len(c) for c in non_empty) / len(non_empty) if non_empty else 0
+
+                        empty_ratio = (len(all_cells) - len(non_empty)) / len(all_cells)
+                        avg_cell_len = sum(len(c) for c in non_empty) / len(non_empty)
                         if avg_cell_len > 50 and empty_ratio > 0.3:
                             continue
                     
@@ -424,8 +412,8 @@ class ClaudeVisionExtractor:
 Return ONLY the Markdown content \u2014 no explanation, no code fences."""
 
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
+                model="claude-opus-4-8",
+                max_tokens=8192,
                 messages=[
                     {
                         "role": "user",
@@ -444,7 +432,18 @@ Return ONLY the Markdown content \u2014 no explanation, no code fences."""
                 ],
             )
 
-            md = response.content[0].text.strip()
+            if response.stop_reason == "refusal":
+                return PageResult(
+                    page_num=page_num,
+                    method=ExtractionMethod.CLAUDE_VISION,
+                    confidence=Confidence.LOW,
+                    markdown="",
+                    errors=["Claude declined to process this page"],
+                )
+
+            md = "".join(
+                block.text for block in response.content if block.type == "text"
+            ).strip()
             
             if md.startswith("```markdown"):
                 md = md[len("```markdown"):].strip()
@@ -511,6 +510,11 @@ class ExtractionOrchestrator:
                 self.docling = DoclingExtractor()
             except Exception as e:
                 console.print(f"[yellow]Docling unavailable: {e}[/yellow]")
+        if force_method == ExtractionMethod.DOCLING and self.docling is None:
+            console.print(
+                "[yellow]--force-method docling requested but Docling is not available; "
+                "falling back to pdfplumber.[/yellow]"
+            )
 
         if anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY"):
             try:

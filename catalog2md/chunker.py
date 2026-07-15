@@ -2,26 +2,34 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Optional
 
-import tiktoken
-
-from .models import Chunk, ChunkType, Confidence, PageResult
+from .models import Chunk, ChunkType, PageResult
 from .part_numbers import extract_part_numbers
-from .tables import extract_tables_from_markdown
 
+_ENCODER = None
+_ENCODER_FAILED = False
 
-_ENCODER: Optional[tiktoken.Encoding] = None
+def _get_encoder():
+    """Load the tiktoken encoder lazily; returns None if unavailable.
 
-def _get_encoder() -> tiktoken.Encoding:
-    global _ENCODER
-    if _ENCODER is None:
-        _ENCODER = tiktoken.get_encoding("cl100k_base")
+    tiktoken downloads its BPE file on first use, so this can fail offline.
+    In that case we fall back to a chars/4 heuristic rather than crashing.
+    """
+    global _ENCODER, _ENCODER_FAILED
+    if _ENCODER is None and not _ENCODER_FAILED:
+        try:
+            import tiktoken
+            _ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _ENCODER_FAILED = True
     return _ENCODER
 
 def count_tokens(text: str) -> int:
-    return len(_get_encoder().encode(text))
+    encoder = _get_encoder()
+    if encoder is not None:
+        return len(encoder.encode(text))
+    # Rough heuristic: ~4 characters per token for English/technical text
+    return max(1, len(text) // 4)
 
 
 HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$', re.MULTILINE)
@@ -85,6 +93,52 @@ def _get_preceding_paragraph(text, table_start):
     return before.strip()
 
 
+def _parse_page_range(page_range: str) -> tuple[int, int]:
+    try:
+        if "-" in page_range:
+            start, end = page_range.split("-", 1)
+            return int(start), int(end)
+        return int(page_range), int(page_range)
+    except ValueError:
+        return 0, 0
+
+
+def _merge_small_text_chunks(chunks: list[Chunk], min_tokens: int, max_tokens: int) -> list[Chunk]:
+    """Merge adjacent text chunks below min_tokens. Table chunks stay atomic."""
+    merged: list[Chunk] = []
+    for chunk in chunks:
+        prev = merged[-1] if merged else None
+        can_merge = (
+            prev is not None
+            and chunk.chunk_type != ChunkType.TABLE
+            and prev.chunk_type != ChunkType.TABLE
+            and (prev.token_count < min_tokens or chunk.token_count < min_tokens)
+            and prev.token_count + chunk.token_count <= max_tokens
+        )
+        if can_merge:
+            content = prev.content + "\n\n" + chunk.content
+            p_start, p_end = _parse_page_range(prev.page_range)
+            c_start, c_end = _parse_page_range(chunk.page_range)
+            start, end = min(p_start, c_start), max(p_end, c_end)
+            tables = prev.tables_in_chunk + chunk.tables_in_chunk
+            merged[-1] = Chunk(
+                chunk_num=prev.chunk_num,
+                chunk_type=ChunkType.MIXED if tables > 0 else ChunkType.TEXT,
+                content=content,
+                section_heading=prev.section_heading or chunk.section_heading,
+                page_range=str(start) if start == end else f"{start}-{end}",
+                source_file=prev.source_file,
+                token_count=count_tokens(content),
+                part_numbers=sorted(set(prev.part_numbers) | set(chunk.part_numbers)),
+                tables_in_chunk=tables,
+            )
+        else:
+            merged.append(chunk)
+    for i, chunk in enumerate(merged, start=1):
+        chunk.chunk_num = i
+    return merged
+
+
 def chunk_page_results(
     page_results: list[PageResult],
     source_filename: str,
@@ -97,16 +151,19 @@ def chunk_page_results(
     current_heading = ""
     current_pages: list[int] = []
     current_tables = 0
-    current_part_numbers: list[str] = []
 
     def flush_text_chunk():
-        nonlocal chunk_num, current_text, current_heading, current_pages, current_tables, current_part_numbers
+        nonlocal chunk_num, current_text, current_pages, current_tables
         if not current_text.strip():
             return
         chunk_num += 1
         tokens = count_tokens(current_text)
         pns = extract_part_numbers(current_text)
-        page_range = f"{min(current_pages)}-{max(current_pages)}" if current_pages else "0-0"
+        if current_pages:
+            lo, hi = min(current_pages), max(current_pages)
+            page_range = str(lo) if lo == hi else f"{lo}-{hi}"
+        else:
+            page_range = "0"
         chunk_type = ChunkType.MIXED if current_tables > 0 else ChunkType.TEXT
         chunks.append(Chunk(
             chunk_num=chunk_num,
@@ -122,7 +179,6 @@ def chunk_page_results(
         current_text = ""
         current_pages = []
         current_tables = 0
-        current_part_numbers = []
 
     for pr in page_results:
         if not pr.markdown.strip():
@@ -171,4 +227,4 @@ def chunk_page_results(
                 current_text = (current_text + "\n\n" + post_text).strip() if current_text else post_text
                 current_pages.append(pr.page_num)
     flush_text_chunk()
-    return chunks
+    return _merge_small_text_chunks(chunks, min_tokens, max_tokens)
