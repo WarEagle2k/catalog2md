@@ -33,7 +33,6 @@ from .chunker import chunk_page_results, count_tokens
 from .validator import validate_conversion
 from .writer import (
     write_consolidated_markdown,
-    update_consolidated_chunk_count,
     write_chunk_files,
     write_report,
 )
@@ -90,19 +89,16 @@ def process_single_pdf(
     ) as progress:
         task = progress.add_task("Extracting pages...", total=None)
 
-        def status_cb(msg: str):
-            progress.update(task, description=msg)
+        def status_cb(msg: str, current: int = None, total: int = None):
+            if current is not None and total is not None:
+                progress.update(task, description=msg, completed=current, total=total)
+            else:
+                progress.update(task, description=msg)
 
         page_results = orchestrator.extract(pdf_path, status_callback=status_cb)
         progress.update(task, description="Extraction complete", completed=100, total=100)
 
     console.print(f"  Extracted [green]{len(page_results)}[/green] pages")
-
-    consolidated_path = pdf_output_dir / f"{catalog_name}.md"
-    consolidated_md = write_consolidated_markdown(
-        page_results, consolidated_path, pdf_path.name
-    )
-    console.print(f"  Written consolidated file: [cyan]{consolidated_path.name}[/cyan]")
 
     chunks = chunk_page_results(
         page_results,
@@ -112,7 +108,12 @@ def process_single_pdf(
     )
     console.print(f"  Generated [green]{len(chunks)}[/green] chunks")
 
-    update_consolidated_chunk_count(consolidated_path, len(chunks))
+    consolidated_path = pdf_output_dir / f"{catalog_name}.md"
+    consolidated_md = write_consolidated_markdown(
+        page_results, consolidated_path, pdf_path.name, total_chunk_count=len(chunks)
+    )
+    console.print(f"  Written consolidated file: [cyan]{consolidated_path.name}[/cyan]")
+
     write_chunk_files(chunks, pdf_output_dir, catalog_name)
     console.print(f"  Written chunk files to: [cyan]{catalog_name}/chunks/[/cyan]")
 

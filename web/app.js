@@ -2,10 +2,6 @@
 
 const API_BASE = "/api";
 
-// Upload config: base64 inflates by ~33%, so each chunk of original binary is
-// kept small enough that the JSON body stays comfortably sized.
-const CHUNK_RAW_SIZE = 500 * 1024; // 500KB of raw PDF per chunk
-const SINGLE_UPLOAD_LIMIT = 600 * 1024; // PDFs under 600KB go single-shot
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 // State
@@ -98,45 +94,6 @@ fileRemove.addEventListener("click", clearFile);
 
 // ===== HELPERS =====
 
-function arrayBufferToBase64(buffer) {
-    // Convert in slices — per-byte string concatenation is quadratic on big files
-    const bytes = new Uint8Array(buffer);
-    const parts = [];
-    const SLICE = 0x8000;
-    for (let i = 0; i < bytes.length; i += SLICE) {
-        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + SLICE)));
-    }
-    return btoa(parts.join(""));
-}
-
-async function postJSON(url, data) {
-    const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-    });
-
-    const responseText = await response.text();
-    let result;
-    try {
-        result = JSON.parse(responseText);
-    } catch (parseErr) {
-        throw new Error(
-            "Server returned invalid JSON (status " + response.status + "). " +
-            "Response: " + responseText.substring(0, 500)
-        );
-    }
-
-    if (!response.ok || result.error) {
-        const detail = result.traceback
-            ? result.error + "\n\n" + result.traceback.substring(0, 500)
-            : result.error || "Server returned status " + response.status;
-        throw new Error(detail);
-    }
-
-    return result;
-}
-
 function downloadBlob(text, filename) {
     const blob = new Blob([text], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
@@ -182,90 +139,81 @@ function catalogBaseName() {
 
 // ===== PROCESSING =====
 
-const statusMessages = [
-    "Running extraction pipeline...",
-    "Detecting tables and structured content...",
-    "Extracting text and layout...",
-    "Processing tables and part numbers...",
-    "Chunking content...",
-    "Validating conversion quality...",
-    "Assembling Markdown output...",
-    "Finalizing...",
-];
-
-function simulateProgress(abortSignal, startPct = 0) {
-    let step = 0;
-    let progress = startPct;
-    const interval = setInterval(() => {
-        if (abortSignal.aborted) {
-            clearInterval(interval);
-            return;
-        }
-        processingStatus.textContent = statusMessages[step];
-        step = Math.min(step + 1, statusMessages.length - 1);
-
-        // Asymptotic progress — never reaches 100 until done
-        progress = Math.min(progress + (100 - progress) * 0.08, 92);
-        processingBarFill.style.width = progress + "%";
-    }, 3000);
-
-    return () => clearInterval(interval);
-}
+let lastPct = 0;
 
 function setProgress(message, pct) {
     processingStatus.textContent = message;
-    processingBarFill.style.width = pct + "%";
-}
-
-async function uploadSingleShot(arrayBuffer, filename) {
-    const b64 = arrayBufferToBase64(arrayBuffer);
-    setProgress("Uploading PDF...", 10);
-    return postJSON(`${API_BASE}/convert`, {
-        action: "convert",
-        pdf_base64: b64,
-        filename: filename,
-    });
-}
-
-async function uploadChunked(arrayBuffer, filename, onProcessingStart) {
-    const totalSize = arrayBuffer.byteLength;
-    const totalChunks = Math.ceil(totalSize / CHUNK_RAW_SIZE);
-
-    // Step 1: Init upload session
-    setProgress("Initializing upload...", 5);
-    const initResult = await postJSON(`${API_BASE}/convert`, {
-        action: "init",
-        filename: filename,
-        total_chunks: totalChunks,
-        total_size: totalSize,
-    });
-
-    const uploadId = initResult.upload_id;
-
-    // Step 2: Send chunks sequentially
-    for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_RAW_SIZE;
-        const end = Math.min(start + CHUNK_RAW_SIZE, totalSize);
-        const chunkB64 = arrayBufferToBase64(arrayBuffer.slice(start, end));
-
-        const uploadPct = 5 + ((i + 1) / totalChunks) * 30; // 5-35% for upload phase
-        setProgress(`Uploading chunk ${i + 1} of ${totalChunks}...`, uploadPct);
-
-        await postJSON(`${API_BASE}/convert`, {
-            action: "chunk",
-            upload_id: uploadId,
-            chunk_index: i,
-            data: chunkB64,
-        });
+    if (pct != null) {
+        // never move backwards — events can carry coarser estimates
+        lastPct = Math.max(lastPct, pct);
+    } else {
+        // progress event without a percentage: nudge forward slightly
+        lastPct = Math.min(lastPct + 1.5, 90);
     }
+    processingBarFill.style.width = lastPct + "%";
+}
 
-    // Step 3: Trigger processing (this call blocks until conversion completes)
-    setProgress("Processing PDF...", 40);
-    if (onProcessingStart) onProcessingStart();
-    return postJSON(`${API_BASE}/convert`, {
-        action: "process",
-        upload_id: uploadId,
+// Multipart upload with real byte-level progress (0–20% of the bar)
+function uploadPdf(file) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `${API_BASE}/convert`);
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const pct = (e.loaded / e.total) * 20;
+                setProgress(`Uploading... ${Math.round((e.loaded / e.total) * 100)}%`, pct);
+            }
+        };
+        xhr.onload = () => {
+            let body = {};
+            try { body = JSON.parse(xhr.responseText); } catch { /* fall through */ }
+            if (xhr.status >= 200 && xhr.status < 300 && body.job_id) {
+                resolve(body.job_id);
+            } else {
+                reject(new Error(body.detail || body.error || `Upload failed (status ${xhr.status})`));
+            }
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload."));
+        const form = new FormData();
+        form.append("file", file, file.name);
+        xhr.send(form);
     });
+}
+
+// Follow the conversion job's Server-Sent Events until it finishes
+function followJob(jobId) {
+    return new Promise((resolve, reject) => {
+        const es = new EventSource(`${API_BASE}/jobs/${jobId}/events`);
+        es.onmessage = (e) => {
+            let ev;
+            try { ev = JSON.parse(e.data); } catch { return; }
+            if (ev.type === "progress") {
+                setProgress(ev.message, ev.pct != null ? ev.pct : null);
+            } else if (ev.type === "done") {
+                es.close();
+                resolve();
+            } else if (ev.type === "error") {
+                es.close();
+                const detail = ev.traceback
+                    ? ev.error + "\n\n" + ev.traceback.substring(0, 500)
+                    : ev.error;
+                reject(new Error(detail));
+            }
+        };
+        es.onerror = () => {
+            es.close();
+            reject(new Error("Lost connection to the conversion server."));
+        };
+    });
+}
+
+async function fetchResult(jobId) {
+    const response = await fetch(`${API_BASE}/jobs/${jobId}/result`);
+    const body = await response.json();
+    if (!response.ok) {
+        throw new Error(body.error || body.detail || `Failed to fetch result (status ${response.status})`);
+    }
+    return body;
 }
 
 async function startConversion() {
@@ -277,30 +225,16 @@ async function startConversion() {
     hideError();
     resultsSection.hidden = true;
     currentData = null;
+    lastPct = 0;
     processingBarFill.style.width = "0%";
-    processingStatus.textContent = "Reading PDF file...";
+    processingStatus.textContent = "Uploading PDF...";
 
-    const abortController = new AbortController();
-    let stopProgress = null;
     const startedAt = performance.now();
 
     try {
-        const arrayBuffer = await selectedFile.arrayBuffer();
-        const filename = selectedFile.name;
-
-        let result;
-        if (arrayBuffer.byteLength <= SINGLE_UPLOAD_LIMIT) {
-            stopProgress = simulateProgress(abortController.signal, 10);
-            result = await uploadSingleShot(arrayBuffer, filename);
-        } else {
-            // Large file: chunked upload, then simulated progress during processing
-            result = await uploadChunked(arrayBuffer, filename, () => {
-                stopProgress = simulateProgress(abortController.signal, 40);
-            });
-        }
-
-        abortController.abort();
-        if (stopProgress) stopProgress();
+        const jobId = await uploadPdf(selectedFile);
+        await followJob(jobId);
+        const result = await fetchResult(jobId);
 
         conversionSeconds = (performance.now() - startedAt) / 1000;
         processingBarFill.style.width = "100%";
@@ -315,8 +249,6 @@ async function startConversion() {
         }, 600);
 
     } catch (err) {
-        abortController.abort();
-        if (stopProgress) stopProgress();
         processing.hidden = true;
         fileInfo.hidden = false;
         dropZone.hidden = true;

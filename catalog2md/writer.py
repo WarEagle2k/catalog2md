@@ -10,7 +10,8 @@ import yaml
 from .models import Chunk, Confidence, ConversionReport, ExtractionMethod, PageResult
 
 
-def write_consolidated_markdown(page_results, output_path, source_filename):
+def render_consolidated_markdown(page_results, source_filename, total_chunk_count=0):
+    """Render the consolidated Markdown document as a string."""
     method_per_page = {}
     for pr in page_results:
         method_per_page[pr.page_num] = pr.method.value
@@ -19,7 +20,7 @@ def write_consolidated_markdown(page_results, output_path, source_filename):
         "page_count": len(page_results),
         "extraction_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "extraction_method_per_page": method_per_page,
-        "total_chunk_count": 0,
+        "total_chunk_count": total_chunk_count,
     }
     yaml_block = f"---\n{yaml.dump(front_matter, default_flow_style=False, sort_keys=False)}---\n\n"
     content_parts = [yaml_block]
@@ -32,16 +33,16 @@ def write_consolidated_markdown(page_results, output_path, source_filename):
         content_parts.append(f"\n<!-- PAGE {pr.page_num} | method: {pr.method.value} -->\n")
         content_parts.append(pr.markdown)
         content_parts.append("\n")
-    full_content = "\n".join(content_parts)
+    return "\n".join(content_parts)
+
+
+def write_consolidated_markdown(page_results, output_path, source_filename, total_chunk_count=0):
+    full_content = render_consolidated_markdown(
+        page_results, source_filename, total_chunk_count
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(full_content, encoding="utf-8")
     return full_content
-
-
-def update_consolidated_chunk_count(output_path, chunk_count):
-    content = output_path.read_text(encoding="utf-8")
-    content = content.replace("total_chunk_count: 0", f"total_chunk_count: {chunk_count}", 1)
-    output_path.write_text(content, encoding="utf-8")
 
 
 def write_chunk_files(chunks, output_dir, catalog_name):

@@ -19,7 +19,7 @@ Convert industrial/technical PDF catalogs into clean, chunked Markdown optimized
 ### 1. Install dependencies
 
 ```bash
-pip install docling pdfplumber pyyaml rich tiktoken pypdf --break-system-packages
+pip install docling pdfplumber pyyaml rich tiktoken pypdf fastapi uvicorn python-multipart --break-system-packages
 # For CPU-only PyTorch (smaller install):
 pip install torch --index-url https://download.pytorch.org/whl/cpu --break-system-packages
 ```
@@ -47,9 +47,10 @@ python -m catalog2md ./pdf_folder/ --output ./output
 
 ## Web Interface
 
-The web interface provides:
-- Drag-and-drop PDF upload (large files are uploaded in chunks automatically)
-- Real-time progress indicator and conversion timing
+The web interface runs on FastAPI + uvicorn and provides:
+- Drag-and-drop PDF upload (standard multipart upload with byte-level progress)
+- Live conversion progress streamed from the pipeline via Server-Sent Events
+  (actual page-by-page status, not an animation) and conversion timing
 - Overview dashboard (pages, chunks, tables, part numbers, validation status)
 - Consolidated Markdown viewer with copy/download
 - Chunk browser with full-text search, type filtering (text/table/mixed),

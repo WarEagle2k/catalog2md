@@ -345,7 +345,12 @@ class PdfPlumberExtractor:
 # ---------------------------------------------------------------------------
 
 class ClaudeVisionExtractor:
-    """Final fallback: uses Claude's vision API to interpret PDF page images."""
+    """Final fallback: sends the PDF page to Claude using native PDF document input.
+
+    The Claude API accepts PDF documents directly, so no rasterization step
+    (pdf2image / poppler) is needed — the single page is extracted with pypdf
+    and sent as a document content block.
+    """
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -354,10 +359,21 @@ class ClaudeVisionExtractor:
                 "ANTHROPIC_API_KEY not set. Pass via --api-key or set the environment variable."
             )
 
+    @staticmethod
+    def _single_page_pdf(pdf_path: str | Path, page_num: int) -> bytes:
+        """Extract one page (1-indexed) into a standalone PDF."""
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(str(pdf_path))
+        writer = PdfWriter()
+        writer.add_page(reader.pages[page_num - 1])
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
+
     def extract_page(self, pdf_path: str | Path, page_num: int) -> PageResult:
-        """Convert a single page to an image and send to Claude for interpretation."""
+        """Send a single page to Claude for interpretation."""
         try:
-            from pdf2image import convert_from_path
             import anthropic
         except ImportError as e:
             return PageResult(
@@ -369,25 +385,8 @@ class ClaudeVisionExtractor:
             )
 
         try:
-            images = convert_from_path(
-                str(pdf_path),
-                first_page=page_num,
-                last_page=page_num,
-                dpi=200,
-                fmt="png",
-            )
-            if not images:
-                return PageResult(
-                    page_num=page_num,
-                    method=ExtractionMethod.CLAUDE_VISION,
-                    confidence=Confidence.LOW,
-                    markdown="",
-                    errors=["Failed to render page as image"],
-                )
-
-            img_buffer = io.BytesIO()
-            images[0].save(img_buffer, format="PNG")
-            img_b64 = base64.b64encode(img_buffer.getvalue()).decode("utf-8")
+            page_pdf = self._single_page_pdf(pdf_path, page_num)
+            pdf_b64 = base64.b64encode(page_pdf).decode("utf-8")
 
             client = anthropic.Anthropic(api_key=self.api_key)
 
@@ -419,11 +418,11 @@ Return ONLY the Markdown content \u2014 no explanation, no code fences."""
                         "role": "user",
                         "content": [
                             {
-                                "type": "image",
+                                "type": "document",
                                 "source": {
                                     "type": "base64",
-                                    "media_type": "image/png",
-                                    "data": img_b64,
+                                    "media_type": "application/pdf",
+                                    "data": pdf_b64,
                                 },
                             },
                             {"type": "text", "text": prompt},
@@ -523,20 +522,29 @@ class ExtractionOrchestrator:
                 console.print(f"[yellow]Claude vision unavailable: {e}[/yellow]")
 
     def extract(self, pdf_path: str | Path, status_callback=None) -> list[PageResult]:
-        """Extract all pages, using fallback cascade as needed."""
+        """Extract all pages, using fallback cascade as needed.
+
+        status_callback is called as callback(message, current_page, total_pages);
+        the page arguments are None when no per-page progress is available.
+        """
         import pdfplumber
         with pdfplumber.open(str(pdf_path)) as pdf:
             num_pages = len(pdf.pages)
 
         if self.docling and self.force_method != ExtractionMethod.PDFPLUMBER:
             if status_callback:
-                status_callback("Extracting with Docling...")
+                status_callback("Extracting with Docling...", None, None)
             try:
                 results = self.docling.extract(pdf_path)
                 if len(results) == num_pages:
                     final_results = []
-                    for pr in results:
+                    for i, pr in enumerate(results, start=1):
                         if self._needs_fallback(pr):
+                            if status_callback:
+                                status_callback(
+                                    f"Re-extracting page {pr.page_num}/{num_pages}...",
+                                    i, num_pages,
+                                )
                             fallback = self._fallback_extract(pdf_path, pr.page_num, status_callback)
                             final_results.append(fallback)
                         else:
@@ -548,7 +556,7 @@ class ExtractionOrchestrator:
         results: list[PageResult] = []
         for page_num in range(1, num_pages + 1):
             if status_callback:
-                status_callback(f"Extracting page {page_num}/{num_pages}...")
+                status_callback(f"Extracting page {page_num}/{num_pages}...", page_num, num_pages)
 
             if self.force_method == ExtractionMethod.CLAUDE_VISION and self.claude:
                 pr = self.claude.extract_page(pdf_path, page_num)
@@ -578,7 +586,7 @@ class ExtractionOrchestrator:
             return pr
         if self.claude:
             if status_callback:
-                status_callback(f"Page {page_num}: falling back to Claude vision...")
+                status_callback(f"Page {page_num}: falling back to Claude vision...", None, None)
             return self.claude.extract_page(pdf_path, page_num)
         pr.confidence = Confidence.LOW
         return pr
